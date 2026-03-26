@@ -252,9 +252,9 @@ The server returns 200 with the resource and a `PAYMENT-RESPONSE` header contain
 
 ## Step 3: Second Request — Client Signs Voucher for $0.20 Cumulative (No Onchain Transaction)
 
-The client makes another request. The server returns a **generic 402** (no channel state) — just the price and requirements. The client already knows its channel state from the `PAYMENT-RESPONSE` in Step 2. It merges the 402 price with its own state, signs a new cumulative voucher incrementing by $0.10, and sends it.
+The client makes another request. The server returns a **generic 402** (no channel state) — just the price and requirements. The client already knows its channel state from the `PAYMENT-RESPONSE` in Step 2. It signs a new cumulative voucher incrementing by $0.10 and sends it.
 
-The server reads the `channelId` from the client's payload, looks up its own per-channel state, and includes it in `paymentRequirements.extra` when forwarding to the facilitator. The facilitator cross-checks the client's base against the server's truth.
+The server reads the `channelId` from the client's payload, looks up its own per-channel state, and includes it in `paymentRequirements.extra` when forwarding to the facilitator. The facilitator verifies the implied base against the server's truth.
 
 ### `PAYMENT-REQUIRED` header (base64-decoded)
 
@@ -284,7 +284,7 @@ The server reads the `channelId` from the client's payload, looks up its own per
 
 ### `PAYMENT-SIGNATURE` header (base64-decoded)
 
-The client merges the 402 requirements with its own channel state into `accepted`:
+The client signs a voucher using its own channel state:
 
 ```json
 {
@@ -297,10 +297,7 @@ The client merges the 402 requirements with its own channel state into `accepted
     "payTo": "0xServerPayeeAddress",
     "maxTimeoutSeconds": 3600,
     "extra": {
-      "authorizedSettler": "0xFacilitatorSignerAddress",
-      "channelId": "0xabc123...channelId",
-      "cumulativeAmount": "100000",
-      "deposit": "1000000"
+      "authorizedSettler": "0xFacilitatorSignerAddress"
     }
   },
   "payload": {
@@ -331,10 +328,7 @@ The server reads `channelId` from the payload, looks up its own state (`lastCumu
       "payTo": "0xServerPayeeAddress",
       "maxTimeoutSeconds": 3600,
       "extra": {
-        "authorizedSettler": "0xFacilitatorSignerAddress",
-        "channelId": "0xabc123...channelId",
-        "cumulativeAmount": "100000",
-        "deposit": "1000000"
+        "authorizedSettler": "0xFacilitatorSignerAddress"
       }
     },
     "payload": {
@@ -362,9 +356,8 @@ The server reads `channelId` from the payload, looks up its own state (`lastCumu
 ```
 
 > Facilitator checks:
-> 1. `accepted.extra.cumulativeAmount (100000) == paymentRequirements.extra.cumulativeAmount (100000)` ✓ base matches
-> 2. `payload.cumulativeAmount (200000) == accepted.extra.cumulativeAmount (100000) + amount (100000)` ✓ correct increment
-> 3. `payload.cumulativeAmount (200000) <= paymentRequirements.extra.deposit (1000000)` ✓ within deposit
+> 1. `payload.cumulativeAmount (200000) == paymentRequirements.extra.cumulativeAmount (100000) + amount (100000)` ✓ correct increment (implies matching base)
+> 2. `payload.cumulativeAmount (200000) <= paymentRequirements.extra.deposit (1000000)` ✓ within deposit
 
 **Response:**
 
@@ -443,10 +436,7 @@ On the 11th request, the server returns a generic 402 (price only). The client k
     "payTo": "0xServerPayeeAddress",
     "maxTimeoutSeconds": 3600,
     "extra": {
-      "authorizedSettler": "0xFacilitatorSignerAddress",
-      "channelId": "0xabc123...channelId",
-      "cumulativeAmount": "1000000",
-      "deposit": "1000000"
+      "authorizedSettler": "0xFacilitatorSignerAddress"
     }
   },
   "payload": {
@@ -472,7 +462,7 @@ On the 11th request, the server returns a generic 402 (price only). The client k
 
 ### Server → Facilitator: `POST /verify` — validate top-up authorization + voucher
 
-The server reads the `channelId` from the payload, looks up its own state, and includes it in `paymentRequirements.extra`. The facilitator verifies the ERC-3009 authorization parameters for the additional deposit, checks the base amount cross-check, validates the voucher signature, and confirms the new cumulative amount does not exceed the deposit + top-up. No onchain transaction occurs at this stage.
+The server reads the `channelId` from the payload, looks up its own state, and includes it in `paymentRequirements.extra`. The facilitator verifies the ERC-3009 authorization parameters for the additional deposit, validates the amount increment against the server's truth, validates the voucher signature, and confirms the new cumulative amount does not exceed the deposit + top-up. No onchain transaction occurs at this stage.
 
 **Request:**
 
@@ -613,10 +603,7 @@ The client makes one more request and signals it is done by setting `requestClos
     "payTo": "0xServerPayeeAddress",
     "maxTimeoutSeconds": 3600,
     "extra": {
-      "authorizedSettler": "0xFacilitatorSignerAddress",
-      "channelId": "0xabc123...channelId",
-      "cumulativeAmount": "1100000",
-      "deposit": "1500000"
+      "authorizedSettler": "0xFacilitatorSignerAddress"
     }
   },
   "payload": {
@@ -629,7 +616,7 @@ The client makes one more request and signals it is done by setting `requestClos
 }
 ```
 
-### Server → Facilitator: `POST /verify` — cross-check + voucher signature
+### Server → Facilitator: `POST /verify` — voucher signature + amount increment
 
 The server includes its channel state in `paymentRequirements.extra`:
 
@@ -648,10 +635,7 @@ The server includes its channel state in `paymentRequirements.extra`:
       "payTo": "0xServerPayeeAddress",
       "maxTimeoutSeconds": 3600,
       "extra": {
-        "authorizedSettler": "0xFacilitatorSignerAddress",
-        "channelId": "0xabc123...channelId",
-        "cumulativeAmount": "1100000",
-        "deposit": "1500000"
+        "authorizedSettler": "0xFacilitatorSignerAddress"
       }
     },
     "payload": {
@@ -881,10 +865,7 @@ The client anchors to the onchain `settled` amount (500000) since it has no othe
     "payTo": "0xServerPayeeAddress",
     "maxTimeoutSeconds": 3600,
     "extra": {
-      "authorizedSettler": "0xFacilitatorSignerAddress",
-      "channelId": "0xdef456...",
-      "cumulativeAmount": "500000",
-      "deposit": "1000000"
+      "authorizedSettler": "0xFacilitatorSignerAddress"
     }
   },
   "payload": {
@@ -896,8 +877,7 @@ The client anchors to the onchain `settled` amount (500000) since it has no othe
 }
 ```
 
-> Client sets `accepted.extra.cumulativeAmount = 500000` (onchain `settled`).
-> Client signs `payload.cumulativeAmount = 500000 + 100000 = 600000`.
+> Client signs `payload.cumulativeAmount = 500000 (onchain settled) + 100000 = 600000`.
 
 ### Server → Facilitator: `POST /verify` — Stale Base Detected
 
@@ -928,7 +908,7 @@ The server reads `channelId` from the payload, looks up its own state (`lastCumu
 
 **Facilitator cross-check:**
 
-1. `accepted.extra.cumulativeAmount (500000) == paymentRequirements.extra.cumulativeAmount (800000)` ✗ **MISMATCH**
+1. `payload.cumulativeAmount (600000) == paymentRequirements.extra.cumulativeAmount (800000) + amount (100000) = 900000` ✗ **MISMATCH** (implied base 500000 ≠ server truth 800000)
 
 **Response:**
 
@@ -1024,9 +1004,8 @@ The server returns a 402 **with** its per-channel state so the client can retry:
 ```
 
 > Facilitator checks:
-> 1. `accepted.extra.cumulativeAmount (800000) == paymentRequirements.extra.cumulativeAmount (800000)` ✓
-> 2. `payload.cumulativeAmount (900000) == 800000 + 100000` ✓
-> 3. `payload.cumulativeAmount (900000) <= deposit (1000000)` ✓
+> 1. `payload.cumulativeAmount (900000) == paymentRequirements.extra.cumulativeAmount (800000) + amount (100000)` ✓ correct increment (implies matching base)
+> 2. `payload.cumulativeAmount (900000) <= deposit (1000000)` ✓
 
 **Response:**
 
@@ -1148,4 +1127,4 @@ The server recovers the client address from the SIWX token, looks up open channe
 
 ## Step 3: Subsequent Requests
 
-After either Step 2a or 2b, the client has a fresh `PAYMENT-RESPONSE` with channel state. All subsequent requests follow the same pattern as Lifecycle 1, Step 3 — generic 402 for price, client merges with own state, signs voucher, server enriches `paymentRequirements.extra`.
+After either Step 2a or 2b, the client has a fresh `PAYMENT-RESPONSE` with channel state. All subsequent requests follow the same pattern as Lifecycle 1, Step 3 — generic 402 for price, client signs voucher using own state, server enriches `paymentRequirements.extra`.

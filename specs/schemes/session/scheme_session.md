@@ -60,7 +60,7 @@ Client                      Server                   Facilitator           Block
 
 The server returns a 402 with `PaymentRequirements` containing the `amount` for this request and `extra.authorizedSettler`. The 402 is **generic by default** -- it does NOT contain per-client channel state (`channelId`, `cumulativeAmount`, `deposit`). The client is responsible for knowing its own channel state, either from the last `PAYMENT-RESPONSE` (within a workflow) or from a contract read (after state loss). See [Channel Resume](#channel-resume-after-state-loss) for the state-loss case.
 
-The client merges the 402 price with its own channel state into `accepted` and signs a new cumulative voucher. After receiving the client's `PAYMENT-SIGNATURE`, the server reads the `channelId` from the payload, looks up its own per-channel state, and includes it in `paymentRequirements.extra` when forwarding to the facilitator.
+The client signs a new cumulative voucher incrementing by `amount`. After receiving the client's `PAYMENT-SIGNATURE`, the server reads the `channelId` from the payload, looks up its own per-channel state, and includes it in `paymentRequirements.extra` when forwarding to the facilitator.
 
 > **Optional convenience**: If the server can identify the client (e.g. via the [sign-in-with-x](../../extensions/sign-in-with-x.md) extension), it MAY include channel state (`channelId`, `cumulativeAmount`, `deposit`) in the 402 `extra` as a convenience. This is NOT required for the core flow.
 
@@ -71,7 +71,6 @@ Client                      Server                   Facilitator
   |   (scheme:session, amount, authorizedSettler — no channel state)
   |                          |                              |
   | [knows channel state from last PAYMENT-RESPONSE]        |
-  | [merges 402 price with own channel state into accepted]  |
   | [signs voucher: cumulativeAmount = own cumulativeAmount + amount]
   |-- GET /resource + PAYMENT-SIGNATURE ----------------->|
   |   (payload.type = voucher)                             |
@@ -130,11 +129,11 @@ The channel resume flow:
 
 1. Client receives a generic 402 (no channel state)
 2. Client discovers its channel via a network-specific mechanism (e.g. contract read on EVM -- see [`scheme_session_evm.md`](./scheme_session_evm.md))
-3. Client sends a voucher anchored to the onchain `settled` amount, sets `accepted.extra.cumulativeAmount = settled`
+3. Client sends a voucher anchored to the onchain `settled` amount (`payload.cumulativeAmount = settled + amount`)
 4. Server reads the `channelId` from the payload, includes its own channel state in `paymentRequirements.extra`
-5. Facilitator checks `accepted.extra.cumulativeAmount == paymentRequirements.extra.cumulativeAmount`
+5. Facilitator checks `payload.cumulativeAmount == paymentRequirements.extra.cumulativeAmount + paymentRequirements.amount`
 6. **If match**: the server had no unsettled vouchers (or recently settled). Facilitator accepts.
-7. **If mismatch**: the server holds unsettled vouchers above the onchain `settled` amount. Facilitator rejects with `session_stale_cumulative_amount`.
+7. **If mismatch**: the server holds unsettled vouchers above the onchain `settled` amount. The implied base (`payload.cumulativeAmount - amount`) does not match the server's truth. Facilitator rejects with `session_stale_cumulative_amount`.
 8. On rejection: server returns a **corrective 402** that includes its per-channel state (`channelId`, `cumulativeAmount`, `deposit`) so the client can retry with the correct base. At most one extra roundtrip.
 
 ```
@@ -153,7 +152,7 @@ Client                      Server                   Facilitator           Block
   |                          |-- POST /verify ----------->|                      |
   |                          |   (paymentRequirements.extra.cumulativeAmount = server's truth)
   |                          |                              |                     |
-  |               [facilitator: accepted.extra.cumulativeAmount == paymentRequirements.extra.cumulativeAmount?]
+  |               [facilitator: payload.cumulativeAmount == paymentRequirements.extra.cumulativeAmount + amount?]
   |                          |                              |                     |
   |            alt match ----|<-- isValid: true ----------|                      |
   |<-- 200 + PAYMENT-RESPONSE|                              |                     |
@@ -233,10 +232,9 @@ A facilitator verifying a `session`-scheme payment MUST enforce:
 3. **Payee match**: The channel payee MUST equal `paymentRequirements.payTo`.
 4. **Token match**: The channel token MUST equal `paymentRequirements.asset`.
 5. **Settler match**: The channel's authorized settler MUST equal the facilitator's own signer address.
-6. **Base amount match**: `accepted.extra.cumulativeAmount` MUST equal `paymentRequirements.extra.cumulativeAmount`. This cross-checks the client's claimed base against the server's truth. If the client's base is stale (e.g. anchored to onchain `settled` while the server has unsettled vouchers), the facilitator rejects with `session_stale_cumulative_amount`.
-7. **Amount increment**: `payload.cumulativeAmount` MUST equal `accepted.extra.cumulativeAmount + paymentRequirements.amount`. This ensures the correct per-request increment.
-8. **Deposit sufficiency**: `payload.cumulativeAmount` MUST be ≤ `paymentRequirements.extra.deposit` (the server's known deposit). For `topUp` payloads, `payload.cumulativeAmount` MUST be ≤ `paymentRequirements.extra.deposit + topUp.additionalDeposit`.
-9. **Channel not expired**: If a close has been requested and the grace period has elapsed, the channel MUST be rejected.
+6. **Amount increment (base cross-check)**: `payload.cumulativeAmount` MUST equal `paymentRequirements.extra.cumulativeAmount + paymentRequirements.amount`. This single check validates both the correct per-request increment and that the client's implied base (`payload.cumulativeAmount - amount`) matches the server's truth. If the implied base does not match (e.g. anchored to onchain `settled` while the server has unsettled vouchers), the facilitator rejects with `session_stale_cumulative_amount`.
+7. **Deposit sufficiency**: `payload.cumulativeAmount` MUST be ≤ `paymentRequirements.extra.deposit` (the server's known deposit). For `topUp` payloads, `payload.cumulativeAmount` MUST be ≤ `paymentRequirements.extra.deposit + topUp.additionalDeposit`.
+8. **Channel not expired**: If a close has been requested and the grace period has elapsed, the channel MUST be rejected.
 
 These checks are security-critical. The server is the source of truth via `paymentRequirements.extra`. The facilitator validates; the server provides data. Implementations MAY introduce stricter limits but MUST NOT relax the above constraints.
 
