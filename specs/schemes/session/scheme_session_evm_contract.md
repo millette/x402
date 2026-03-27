@@ -1,13 +1,15 @@
 # Session Scheme: EVM Contract Specification
 
-Adapted from the audited [TempoStreamChannel](https://github.com/tempoxyz/tempo/blob/main/tips/ref-impls/src/TempoStreamChannel.sol) for standard EVM ERC-20 chains. Adds gasless `openWithERC3009` and `topUpWithERC3009` via ERC-3009 `receiveWithAuthorization`, and `authorizedSettler` for facilitator-sponsored settle/close.
+Adapted from the audited [TempoStreamChannel](https://github.com/tempoxyz/tempo/blob/main/tips/ref-impls/src/TempoStreamChannel.sol) for standard EVM ERC-20 chains. Adds gasless `openWithERC3009` and `topUpWithERC3009` via ERC-3009 `receiveWithAuthorization`, `authorizedSettler` for server-cosigned close authorization and caller-unrestricted `settle`.
 
 ## Changes from TempoStreamChannel
 
 1. **ERC-20 token interface**: `ITIP20` / `TempoUtilities` replaced with `IERC20` / `IERC3009`
 2. **`openWithERC3009`**: Gasless channel open: anyone (facilitator) submits tx, payer authorizes via ERC-3009 signature
 3. **`topUpWithERC3009`**: Gasless top-up 
-4. **`authorizedSettler`**: Delegates onchain submission of `settle` and `close` from the payee to a designated address (e.g. the facilitator). Mirrors the existing `authorizedSigner` pattern. `authorizedSigner` delegates voucher signing from the payer side, `authorizedSettler` delegates settlement from the payee side.
+4. **`authorizedSettler`**: Delegates close authorization signing from the payee to a designated address (e.g. a server delegate). Mirrors the existing `authorizedSigner` pattern. `authorizedSigner` delegates voucher signing from the payer side, `authorizedSettler` delegates close authorization signing from the payee side.
+5. **No caller restriction on `settle`**: `settle` has no `msg.sender` check. Any caller can submit, but a valid client-signed voucher is still required. Funds can only flow to the payee.
+6. **Server-cosigned `close`**: `close` requires a `CloseAuthorization` EIP-712 signature from the payee or `authorizedSettler` (if non-zero), preventing unauthorized channel closure.
 
 Existing `open` and `topUp` remain unchanged in behavior. Gasless and self-submitted operations produce identical channel state and are fully interoperable on the same channel.
 
@@ -44,6 +46,9 @@ Both new functions use `receiveWithAuthorization` (not `transferWithAuthorizatio
 
      bytes32 public constant VOUCHER_TYPEHASH =
          keccak256("Voucher(bytes32 channelId,uint128 cumulativeAmount)");
+
++    bytes32 public constant CLOSE_AUTHORIZATION_TYPEHASH =
++        keccak256("CloseAuthorization(bytes32 channelId,uint128 cumulativeAmount)");
 
 -    uint64 public constant CLOSE_GRACE_PERIOD = 15 minutes;
 +    uint64 public constant CLOSE_GRACE_PERIOD = 60 minutes;
@@ -223,9 +228,8 @@ Both new functions use `receiveWithAuthorization` (not `transferWithAuthorizatio
              revert ChannelNotFound();
          }
 -        if (msg.sender != channel.payee) {
-+        if (msg.sender != channel.payee && msg.sender != channel.authorizedSettler) {
-             revert NotPayee();
-         }
+-            revert NotPayee();
+-        }
          if (cumulativeAmount > channel.deposit) {
              revert AmountExceedsDeposit();
          }
@@ -383,16 +387,18 @@ Both new functions use `receiveWithAuthorization` (not `transferWithAuthorizatio
 
      /**
 -     * @notice Close a channel immediately (server only).
-+     * @notice Close a channel immediately (server or authorizedSettler).
++     * @notice Close a channel immediately (requires CloseAuthorization).
       * @dev Settles any outstanding voucher and refunds remainder to payer.
       * @param channelId The channel to close
       * @param cumulativeAmount Final cumulative amount (0 if no payments)
       * @param signature EIP-712 signature (empty if cumulativeAmount == 0 or same as settled)
++     * @param closeAuthorization EIP-712 CloseAuthorization signature from payee or authorizedSettler
       */
      function close(
          bytes32 channelId,
          uint128 cumulativeAmount,
          bytes calldata signature
++        bytes calldata closeAuthorization
      )
          external
          override
@@ -406,9 +412,18 @@ Both new functions use `receiveWithAuthorization` (not `transferWithAuthorizatio
              revert ChannelNotFound();
          }
 -        if (msg.sender != channel.payee) {
-+        if (msg.sender != channel.payee && msg.sender != channel.authorizedSettler) {
-             revert NotPayee();
-         }
+-            revert NotPayee();
+-        }
++
++        // Verify CloseAuthorization from payee or authorizedSettler
++        bytes32 closeHash = keccak256(abi.encode(CLOSE_AUTHORIZATION_TYPEHASH, channelId, cumulativeAmount));
++        bytes32 closeDigest = _hashTypedData(closeHash);
++        address closeSigner = ECDSA.recoverCalldata(closeDigest, closeAuthorization);
++        address expectedCloseSigner =
++            channel.authorizedSettler != address(0) ? channel.authorizedSettler : channel.payee;
++        if (closeSigner != expectedCloseSigner) {
++            revert InvalidCloseAuthorization();
++        }
 
          address token = channel.token;
          address payer = channel.payer;
@@ -572,6 +587,21 @@ Both new functions use `receiveWithAuthorization` (not `transferWithAuthorizatio
          return _hashTypedData(structHash);
      }
 
++    /**
++     * @notice Compute the digest for a close authorization (for off-chain signing).
++     */
++    function getCloseAuthorizationDigest(
++        bytes32 channelId,
++        uint128 cumulativeAmount
++    )
++        external
++        view
++        returns (bytes32)
++    {
++        bytes32 structHash = keccak256(abi.encode(CLOSE_AUTHORIZATION_TYPEHASH, channelId, cumulativeAmount));
++        return _hashTypedData(structHash);
++    }
+
      /**
       * @notice Read multiple channel states in a single call.
       * @param channelIds Array of channel IDs to query
@@ -611,24 +641,12 @@ A channel opened via `openWithERC3009` has `channel.payer` set to the actual cli
 - `channelId` is identical regardless of which open method was used
 - `settle`, `close`, `requestClose`, `withdraw` work unchanged on either type of channel
 
-### `authorizedSettler`
 
-`authorizedSettler` mirrors the existing `authorizedSigner` pattern:
 
-| Field              | Set by | Delegates                        | Default (address(0))          |
-| :----------------- | :----- | :------------------------------- | :---------------------------- |
-| `authorizedSigner` | Payer  | Voucher signing (payer side)     | Payer signs vouchers directly |
-| `authorizedSettler`| Payer  | Onchain settlement (payee side)  | Payee must call directly      |
+### New Errors
 
-When `authorizedSettler` is non-zero, both `settle` and `close` accept `msg.sender == channel.payee || msg.sender == channel.authorizedSettler`. This enables the facilitator to submit settlement and close transactions on behalf of the server, making the entire channel lifecycle gasless for both client and server.
-
-The `authorizedSettler` is set at channel open time. The client obtains the facilitator's signer address from `PaymentRequirements.extra.authorizedSettler` or the facilitator's `/supported` endpoint. Facilitators MUST verify that `channel.authorizedSettler` matches their own signer address before accepting a channel — this prevents a malicious payer from designating an untrusted settler.
-
-`authorizedSettler` is included in the `channelId` computation to ensure channels with different settlers produce distinct IDs.
-
-### New Error
-
-`openWithERC3009` introduces one new error: `InvalidPayer()` (for `payer == address(0)` check). The original `open()` does not need this because `msg.sender` can never be `address(0)`.
+- `InvalidPayer()`: Introduced by `openWithERC3009` (for `payer == address(0)` check). The original `open()` does not need this because `msg.sender` can never be `address(0)`.
+- `InvalidCloseAuthorization()`: Introduced by `close`. Reverts when the `CloseAuthorization` signature does not recover to the expected signer (payee or `authorizedSettler`).
 
 ### ERC-3009 Failure Mode
 

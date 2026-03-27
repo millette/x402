@@ -38,9 +38,13 @@ Settlement is deferred at the server's discretion. The server accumulates vouche
 
 ### 4. Facilitator Verification
 
-The server is the source of truth for per-channel state and provides it to the facilitator via `paymentRequirements.extra`. The facilitator cross-checks the client's signed voucher against this server-provided state: signature validity, channel existence, payee/token/settler match, correct cumulative amount increment, and deposit sufficiency. Concrete verification checklists are defined in network-specific specs.
+The server is the source of truth for per-channel state and provides it to the facilitator via `paymentRequirements.extra`. The facilitator cross-checks the client's signed voucher against this server-provided state: signature validity, channel existence, payee/token match, correct cumulative amount increment, and deposit sufficiency. Concrete verification checklists are defined in network-specific specs.
 
-### 5. Client State Verification
+### 5. Server-Authorized Close
+
+Channel closure (`close`) MUST require an authorization signature from the payee or `authorizedSettler` (if designated). This prevents unauthorized parties from closing a channel and refunding the deposit before the server has settled earned funds. Settlement (`settle`) has no caller restriction — a valid client-signed voucher is the only requirement, and funds can only flow to the payee. Concrete signature types are defined in network-specific specs.
+
+### 6. Client State Verification
 
 The client MUST verify server-provided cumulative amounts before signing each voucher. In-session: confirm the returned `cumulativeAmount` incremented by exactly the request price. On recovery (after state loss): verify that the server-provided `lastSignature` recovers to the client's own key for the claimed `cumulativeAmount`. Concrete field-level rules are defined in network-specific specs.
 
@@ -77,7 +81,7 @@ The 402 is generic by default -- it does NOT contain per-client channel state. T
 Client                      Server                   Facilitator
   |-- GET /resource -------->|                              |
   |<-- 402 + PaymentRequired-|                              |
-  |   (scheme:session, amount, authorizedSettler — no channel state)
+  |   (scheme:session, amount, authorizedSettler [server key] — no channel state)
   |                          |                              |
   | [knows channel state from last PAYMENT-RESPONSE]        |
   | [signs voucher: cumulativeAmount = own cumulativeAmount + amount]
@@ -100,7 +104,7 @@ When `cumulativeAmount + amount > deposit`, the client signs a token authorizati
 Client                      Server                   Facilitator           Blockchain
   |-- GET /resource -------->|                              |                     |
   |<-- 402 + PaymentRequired-|                              |                     |
-  |   (amount, authorizedSettler — no channel state)        |                     |
+  |   (amount, authorizedSettler [server key] — no channel state)        |                     |
   | [knows cumulativeAmount + amount > deposit from own state — top-up required]  |
   | [signs token authorization + new voucher]               |                     |
   |-- GET /resource + PAYMENT-SIGNATURE ------------------>|                      |
@@ -117,7 +121,7 @@ Client                      Server                   Facilitator           Block
 
 ### Close (Client-Initiated via Payload Flag)
 
-The client includes `requestClose: true` in a voucher payload.
+The client includes `requestClose: true` in a voucher payload. The server signs a close authorization and forwards it to the facilitator.
 
 ```
 Client                      Server                   Facilitator           Blockchain
@@ -125,7 +129,10 @@ Client                      Server                   Facilitator           Block
   |   (payload.type = voucher, requestClose = true)    |                      |
   |                          |-- POST /verify -------->| (signature check)    |
   |                          |<-- {isValid} -----------|                      |
+  |                          |                         |                      |
+  |  [server signs CloseAuthorization with payee key or authorizedSettler]    |
   |                          |-- POST /settle -------->|-- close channel ---->|
+  |                          |  (+ closeAuthorization) |                      |
   |                          |<-- {tx} ---------------|                       |
   |<-- 200 + resource -------|                         |                      |
 ```
@@ -203,7 +210,7 @@ In addition to the standard x402 error codes, the `session` scheme defines:
 | `session_invalid_voucher_signature` | Voucher signature does not recover to an authorized signer         |
 | `session_payee_mismatch`            | Channel payee does not match `payTo` in requirements               |
 | `session_token_mismatch`            | Channel token does not match `asset` in requirements               |
-| `session_settler_mismatch`          | Channel `authorizedSettler` does not match the facilitator's signer |
+| `session_invalid_close_authorization` | Close authorization signature does not recover to the expected signer (payee or authorizedSettler) |
 | `session_channel_expired`           | Channel close grace period has elapsed                             |
 | `session_deposit_insufficient`      | Channel deposit is too low to cover another request                |
 | `session_stale_cumulative_amount`  | Voucher's base cumulative amount does not match the server's last known value |

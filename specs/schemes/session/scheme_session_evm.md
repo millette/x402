@@ -2,7 +2,7 @@
 
 ## Summary
 
-The `session` scheme on EVM uses a modified **TempoStreamChannel** contract for onchain escrow, settlement and channel lifecycle management that allows the facilitator to sponsor gas for both client and server operations.
+The `session` scheme on EVM uses a modified **TempoStreamChannel** contract for onchain escrow, settlement and channel lifecycle management. Settlement (`settle`) requires a valid client-signed voucher but has no caller restriction; channel closure (`close`) additionally requires a `CloseAuthorization` EIP-712 signature from the server (payee or `authorizedSettler`). The facilitator sponsors gas for all onchain operations.
 
 | AssetTransferMethod | Use Case                                                    | Recommendation              |
 | :------------------ | :---------------------------------------------------------- | :-------------------------- |
@@ -23,17 +23,17 @@ The session channel contract is a unidirectional payment channel where the clien
 | :-------------------- | :------------------------- | :----------------------------------------------------------------------- |
 | `open`                | Payer                      | Deposit tokens and create a channel (payer pays gas)                     |
 | `openWithERC3009`     | Anyone (facilitator)       | Gasless channel open via ERC-3009 signature                              |
-| `settle`              | Payee or authorizedSettler | Claim funds using a signed cumulative voucher                            |
+| `settle`              | Anyone (valid voucher required) | Claim funds using a signed cumulative voucher                   |
 | `topUp`               | Payer                      | Add funds to an existing channel (payer pays gas)                        |
 | `topUpWithERC3009`    | Anyone (facilitator)       | Gasless top-up via ERC-3009 signature                                    |
 | `requestClose`        | Payer                      | Begin the grace period for unilateral channel closure                    |
-| `close`               | Payee or authorizedSettler | Cooperatively close, settling final voucher and refunding remainder      |
+| `close`               | Anyone (requires CloseAuthorization) | Close channel with server-signed authorization, settle final voucher, refund remainder |
 | `withdraw`            | Payer                      | Withdraw remaining funds after the close grace period                    |
 
 In the x402 session flow, the **facilitator** is the sole gas-paying entity:
 
 - **Client** signs ERC-3009 authorizations (off-chain) → facilitator submits `openWithERC3009` / `topUpWithERC3009`
-- **Server** forwards vouchers to the facilitator → facilitator submits `settle` / `close` as the `authorizedSettler`
+- **Server** forwards vouchers + `CloseAuthorization` signatures to the facilitator → facilitator submits `settle` (no caller restriction) / `close` (with server's `CloseAuthorization`)
 
 > **Requirement**: This contract MUST be deployed to the same address across all supported EVM chains using `CREATE2`.
 
@@ -55,6 +55,20 @@ version: "1"
 ```
 Voucher(bytes32 channelId, uint128 cumulativeAmount)
 ```
+
+### CloseAuthorization EIP-712 Type
+
+Close authorizations use the same EIP-712 domain as vouchers.
+
+**Type:**
+
+```
+CloseAuthorization(bytes32 channelId, uint128 cumulativeAmount)
+```
+
+Signed by the **payee** (if `authorizedSettler == address(0)`) or the **authorizedSettler** (server delegate). Required by `close()` to authorize the final settlement amount.
+
+### Channel ID
 
 The `channelId` is computed deterministically:
 
@@ -78,7 +92,7 @@ The 402 is the entry point of every session interaction. The server returns it w
 
 ### Generic 402 (Default)
 
-By default, the 402 contains only the pricing terms and the facilitator's `authorizedSettler` address. No per-client channel state is included — the client determines its own channel state from its last `PAYMENT-RESPONSE` (within a workflow) or via a contract read (see [Channel Discovery](#channel-discovery)).
+By default, the 402 contains only the pricing terms and the server's `authorizedSettler` address (close authorization signing key). No per-client channel state is included. The client determines its own channel state from its last `PAYMENT-RESPONSE` (within a workflow) or via a contract read (see [Channel Discovery](#channel-discovery)).
 
 ```json
 {
@@ -89,7 +103,7 @@ By default, the 402 contains only the pricing terms and the facilitator's `autho
   "payTo": "0xServerPayeeAddress",
   "maxTimeoutSeconds": 3600,
   "extra": {
-    "authorizedSettler": "0xFacilitatorSignerAddress",
+    "authorizedSettler": "0xServerSettlerAddress",
     "name": "USDC",
     "version": "2"
   }
@@ -98,7 +112,7 @@ By default, the 402 contains only the pricing terms and the facilitator's `autho
 
 ### Enriched 402 (Client Identified or Corrective)
 
-When the server can identify the client (e.g. via [sign-in-with-x](../../extensions/sign-in-with-x.md)) or in a corrective 402 (after `session_stale_cumulative_amount`), it includes the client's channel state in `extra`. This lets the client skip channel discovery.
+When the server can identify the client (e.g. via [sign-in-with-x](../../extensions/sign-in-with-x.md)), it includes the client's channel state in `extra`. This lets the client skip channel discovery.
 
 When channel state is included, the server MUST also include `lastSignature` to enable the client to cryptographically verify the server's claimed state (see [Client Verification Rules](#client-verification-rules-must)).
 
@@ -111,7 +125,7 @@ When channel state is included, the server MUST also include `lastSignature` to 
   "payTo": "0xServerPayeeAddress",
   "maxTimeoutSeconds": 3600,
   "extra": {
-    "authorizedSettler": "0xFacilitatorSignerAddress",
+    "authorizedSettler": "0xServerSettlerAddress",
     "name": "USDC",
     "version": "2",
     "channelId": "0xabc123...",
@@ -126,7 +140,7 @@ When channel state is included, the server MUST also include `lastSignature` to 
 
 | Field                       | Type      | Required | Description                                                                 |
 | :-------------------------- | :-------- | :------- | :-------------------------------------------------------------------------- |
-| `extra.authorizedSettler`   | `string`  | yes      | Facilitator's signer address, used as `authorizedSettler` when opening channels |
+| `extra.authorizedSettler`   | `string`  | yes      | Server's close authorization signing address (delegate). If `address(0)`, payee signs close authorizations directly. Used as `authorizedSettler` when opening channels. |
 | `extra.assetTransferMethod` | `string`  | optional | `"eip3009"` (default) or `"permit2"` (future). Omit to use default.         |
 | `extra.name`                | `string`  | yes      | EIP-712 domain name of the token contract (e.g., `"USDC"`)                  |
 | `extra.version`             | `string`  | yes      | EIP-712 domain version of the token contract (e.g., `"2"`)                  |
@@ -161,7 +175,7 @@ function openWithERC3009(
     uint128 deposit,            // ≥ PaymentRequirements.amount
     bytes32 salt,               // deterministic salt (see Channel Discovery)
     address authorizedSigner,   // 0x0 to use payer's own address, or a delegate
-    address authorizedSettler,  // PaymentRequirements.extra.authorizedSettler (facilitator)
+    address authorizedSettler,  // PaymentRequirements.extra.authorizedSettler (server delegate)
     uint256 validAfter,         // ERC-3009 authorization start time
     uint256 validBefore,        // ERC-3009 authorization expiry time
     bytes32 nonce,              // ERC-3009 authorization nonce
@@ -169,9 +183,9 @@ function openWithERC3009(
 ) external returns (bytes32 channelId)
 ```
 
-**Authorized Signer**: Allows the client to delegate voucher signing to a different key (e.g., a hot wallet or session key). If set to `address(0)`, vouchers must be signed by the payer address.
+**Authorized Signer**: Allows the client to delegate voucher signing to a different key (e.g., a session key or delegate). If set to `address(0)`, vouchers must be signed by the payer address.
 
-**Authorized Settler**: MUST be set to the facilitator's signer address (from `PaymentRequirements.extra.authorizedSettler`). This enables the facilitator to call `settle` and `close` on behalf of the server.
+**Authorized Settler**: MUST be set to the server's close authorization delegate address (from `PaymentRequirements.extra.authorizedSettler`). This designates which key must sign `CloseAuthorization` messages to authorize channel closure. If `address(0)`, the payee signs close authorizations directly.
 
 #### Top-Up: `topUpWithERC3009()`
 
@@ -216,7 +230,7 @@ The `channelOpen` and `topUp` payloads include an `erc3009Authorization` object:
     "payTo": "0xServerPayeeAddress",
     "maxTimeoutSeconds": 3600,
     "extra": {
-      "authorizedSettler": "0xFacilitatorSignerAddress",
+      "authorizedSettler": "0xServerSettlerAddress",
       "name": "USDC",
       "version": "2"
     }
@@ -230,7 +244,7 @@ The `channelOpen` and `topUp` payloads include an `erc3009Authorization` object:
       "deposit": "100000",
       "salt": "0x...keccak256(abi.encode('x402-session', uint256(0)))",
       "authorizedSigner": "0x0000000000000000000000000000000000000000",
-      "authorizedSettler": "0xFacilitatorSignerAddress",
+      "authorizedSettler": "0xServerSettlerAddress",
       "erc3009Authorization": {
         "validAfter": 0,
         "validBefore": 1679616000,
@@ -260,7 +274,7 @@ The `channelOpen` and `topUp` payloads include an `erc3009Authorization` object:
     "payTo": "0xServerPayeeAddress",
     "maxTimeoutSeconds": 3600,
     "extra": {
-      "authorizedSettler": "0xFacilitatorSignerAddress",
+      "authorizedSettler": "0xServerSettlerAddress",
       "name": "USDC",
       "version": "2"
     }
@@ -288,7 +302,7 @@ The `channelOpen` and `topUp` payloads include an `erc3009Authorization` object:
     "payTo": "0xServerPayeeAddress",
     "maxTimeoutSeconds": 3600,
     "extra": {
-      "authorizedSettler": "0xFacilitatorSignerAddress",
+      "authorizedSettler": "0xServerSettlerAddress",
       "name": "USDC",
       "version": "2"
     }
@@ -327,7 +341,7 @@ The server MUST maintain the following per open channel:
 | State Field            | Type      | Description                                                |
 | :--------------------- | :-------- | :--------------------------------------------------------- |
 | `channelId`            | `bytes32` | Channel identifier                                         |
-| `payer`                | `address` | Client address (used to match channels via sign-in-with-x) |
+| `payer`                | `address` | Client address                                             |
 | `lastCumulativeAmount` | `uint128` | Highest cumulative amount from a verified voucher          |
 | `lastSignature`        | `bytes`   | Signature corresponding to `lastCumulativeAmount`          |
 | `deposit`              | `uint128` | Current channel deposit (updated on top-up)                |
@@ -342,7 +356,7 @@ When forwarding a payment to the facilitator, the server includes its per-channe
 
 ```json
 {
-  "authorizedSettler": "0xFacilitator..."
+  "authorizedSettler": "0xServerSettler..."
 }
 ```
 
@@ -350,7 +364,7 @@ When forwarding a payment to the facilitator, the server includes its per-channe
 
 ```json
 {
-  "authorizedSettler": "0xFacilitator...",
+  "authorizedSettler": "0xServerSettler...",
   "channelId": "0xabc...",
   "cumulativeAmount": "500000",
   "deposit": "1000000",
@@ -388,12 +402,12 @@ Verification logic is defined in [Verification Rules](#verification-rules-must).
 
 Performs onchain operations. The facilitator infers the action from the payload:
 
-| `settleAction` | Payload Type   | Onchain Operation                  | When Used                                       |
-| :------------- | :------------- | :--------------------------------- | :---------------------------------------------- |
-| `"open"`       | `channelOpen`  | `openWithERC3009()`                | First request — server opens the channel        |
-| `"topUp"`      | `topUp`        | `topUpWithERC3009()`               | Client sent a top-up payload                    |
-| `"settle"`     | `voucher`      | `settle(channelId, amount, sig)`   | Server batches settlement at its discretion     |
-| `"close"`      | `voucher`      | `close(channelId, amount, sig)`    | Client requested close or server-initiated close |
+| `settleAction` | Payload Type   | Onchain Operation                                             | When Used                                       |
+| :------------- | :------------- | :------------------------------------------------------------ | :---------------------------------------------- |
+| `"open"`       | `channelOpen`  | `openWithERC3009()`                                           | First request — server opens the channel        |
+| `"topUp"`      | `topUp`        | `topUpWithERC3009()`                                          | Client sent a top-up payload                    |
+| `"settle"`     | `voucher`      | `settle(channelId, amount, sig)`                              | Server batches settlement at its discretion     |
+| `"close"`      | `voucher`      | `close(channelId, amount, voucherSig, closeAuth)`             | Client requested close or server-initiated close |
 
 **Request (voucher settle example):**
 
@@ -410,7 +424,7 @@ Performs onchain operations. The facilitator infers the action from the payload:
       "payTo": "0xServerPayeeAddress",
       "maxTimeoutSeconds": 3600,
       "extra": {
-        "authorizedSettler": "0xFacilitatorSignerAddress",
+        "authorizedSettler": "0xServerSettlerAddress",
         "name": "USDC",
         "version": "2"
       }
@@ -431,7 +445,7 @@ Performs onchain operations. The facilitator infers the action from the payload:
     "payTo": "0xServerPayeeAddress",
     "maxTimeoutSeconds": 3600,
     "extra": {
-      "authorizedSettler": "0xFacilitatorSignerAddress",
+      "authorizedSettler": "0xServerSettlerAddress",
       "name": "USDC",
       "version": "2",
       "channelId": "0xabc123...",
@@ -447,8 +461,10 @@ Performs onchain operations. The facilitator infers the action from the payload:
 
 - **`channelOpen`**: Submit `openWithERC3009()` using `payload.channelOpen` parameters. Returns the `channelId` and transaction hash.
 - **`topUp`**: Submit `topUpWithERC3009()` using `payload.topUp` parameters. Returns the transaction hash.
-- **`voucher`**: Submit `settle(channelId, cumulativeAmount, signature)` using the highest voucher. The contract transfers the delta between the onchain `settled` amount and `cumulativeAmount` to the payee.
-- **`voucher` + `requestClose: true`**: Submit `close(channelId, cumulativeAmount, signature)` using the highest voucher. The contract settles the final amount and refunds the remainder to the payer.
+- **`voucher`**: Submit `settle(channelId, cumulativeAmount, signature)` using the highest voucher. The contract transfers the delta between the onchain `settled` amount and `cumulativeAmount` to the payee. `settle` has no caller restriction — a valid voucher is the only requirement.
+- **`voucher` + `requestClose: true`**: Submit `close(channelId, cumulativeAmount, voucherSignature, closeAuthorization)` using the highest voucher and the `CloseAuthorization` signature provided by the server. The contract settles the final amount and refunds the remainder to the payer.
+
+**`closeAuthorization` Field**: When the server requests a close (either because `requestClose: true` or server-initiated), it MUST include `paymentRequirements.extra.closeAuthorization` — an EIP-712 `CloseAuthorization(channelId, cumulativeAmount)` signature from the payee or `authorizedSettler`. The facilitator passes this to the `close()` contract call.
 
 **Close Request Detection**: During `/settle`, if the facilitator reads `channel.closeRequestedAt != 0`, it MUST proceed with onchain settlement to protect the server's funds before the grace period expires.
 
@@ -494,11 +510,10 @@ A facilitator verifying a `session`-scheme payment on EVM MUST enforce:
 2. **Channel existence**: For `voucher` and `topUp` payloads, read `TempoStreamChannel.getChannel(channelId)` -- the channel MUST exist (`payer != address(0)`) and not be finalized. For `channelOpen`, the channel MUST NOT already exist.
 3. **Payee match**: `channel.payee` MUST equal `paymentRequirements.payTo`.
 4. **Token match**: `channel.token` MUST equal `paymentRequirements.asset`. The contract MUST be on the correct chain.
-5. **Settler match**: `channel.authorizedSettler` (or `channelOpen.authorizedSettler`) MUST equal the facilitator's own signer address.
-6. **Balance check** (`channelOpen` and `topUp` only): Verify the client has sufficient token balance (`≥ deposit` for opens, `≥ additionalDeposit` for top-ups). For `voucher` payloads this is not needed as funds are already in escrow.
-7. **Amount increment (base cross-check)**: `payload.cumulativeAmount` MUST equal `paymentRequirements.extra.cumulativeAmount + paymentRequirements.amount`. If the implied base does not match, reject with `session_stale_cumulative_amount`.
-8. **Deposit sufficiency**: `payload.cumulativeAmount` MUST be ≤ `paymentRequirements.extra.deposit`. For `topUp` payloads, `payload.cumulativeAmount` MUST be ≤ `paymentRequirements.extra.deposit + topUp.additionalDeposit`.
-9. **Close request detection**: If `channel.closeRequestedAt != 0` (already available from the `getChannel()` read in rule 2), the facilitator MUST include `closeRequestedAt` in the `/verify` and `/settle` responses. During `/settle`, if `closeRequestedAt != 0`, the facilitator MUST proceed with onchain settlement to protect the server's funds before the grace period expires.
+5. **Balance check** (`channelOpen` and `topUp` only): Verify the client has sufficient token balance (`≥ deposit` for opens, `≥ additionalDeposit` for top-ups). For `voucher` payloads this is not needed as funds are already in escrow.
+6. **Amount increment (base cross-check)**: `payload.cumulativeAmount` MUST equal `paymentRequirements.extra.cumulativeAmount + paymentRequirements.amount`. If the implied base does not match, reject with `session_stale_cumulative_amount`.
+7. **Deposit sufficiency**: `payload.cumulativeAmount` MUST be ≤ `paymentRequirements.extra.deposit`. For `topUp` payloads, `payload.cumulativeAmount` MUST be ≤ `paymentRequirements.extra.deposit + topUp.additionalDeposit`.
+8. **Close request detection**: If `channel.closeRequestedAt != 0` (already available from the `getChannel()` read in rule 2), the facilitator MUST include `closeRequestedAt` in the `/verify` and `/settle` responses. During `/settle`, if `closeRequestedAt != 0`, the facilitator MUST proceed with onchain settlement to protect the server's funds before the grace period expires.
 
 These checks are security-critical. The server provides truth via `paymentRequirements.extra`; the facilitator validates. Implementations MAY introduce stricter limits but MUST NOT relax the above constraints.
 
@@ -569,11 +584,13 @@ If the signature does not verify, the client MUST NOT sign based on the server's
 
 **Reusing Existing Channels**: If a client has an open, non-finalized channel to the same `(payee, token)` with sufficient remaining balance (`deposit - settled ≥ amount`), it SHOULD reuse it rather than opening a new one. Servers MUST support receiving vouchers for any open channel where they are the payee.
 
-**Cooperative Close**: The client includes `requestClose: true` in a voucher payload. The server processes the request normally, then calls `/settle`. The facilitator sees `requestClose: true` in the payload and calls `TempoStreamChannel.close()` as the `authorizedSettler`. The contract settles the final amount to the payee and refunds the remainder to the payer. If no identification extensions are in use and the client does not persist state, it SHOULD close the channel at the end of its workflow to avoid resume complexity.
+**Cooperative Close**: The client includes `requestClose: true` in a voucher payload. The server processes the request normally, then signs a `CloseAuthorization(channelId, lastCumulativeAmount)` with its payee key or `authorizedSettler` delegate and includes it in the `/settle` request to the facilitator. The facilitator sees `requestClose: true` in the payload and calls `TempoStreamChannel.close(channelId, cumulativeAmount, voucherSignature, closeAuthorization)`. The contract verifies the `CloseAuthorization` signature, settles the final amount to the payee, and refunds the remainder to the payer. If no identification extensions are in use and the client does not persist state, it SHOULD close the channel at the end of its workflow to avoid resume complexity.
 
 **Unilateral Close (Escape Hatch)**: If the server becomes unresponsive and the client cannot initiate a cooperative close, the client calls `TempoStreamChannel.requestClose(channelId)` directly onchain, paying gas themselves. This starts the `CLOSE_GRACE_PERIOD` (1 hour). The server can still settle outstanding vouchers via the facilitator during this period. After the grace period, the client calls `withdraw()` to reclaim all unsettled funds. This mechanism is intentionally a direct blockchain transaction, not gasless — the client does not have the facilitator's address in the unilateral path, and adding EIP-712 signature flows for an escape hatch would introduce unnecessary friction.
 
-**Server Settlement Timing**: The server SHOULD settle (or close) outstanding vouchers for a channel within `CLOSE_GRACE_PERIOD` of the last client request on that channel. This ensures the server captures earned funds even if the client initiates a unilateral close after the session goes idle. The facilitator provides an additional safety net: since it reads `channel.closeRequestedAt` from onchain state during `/verify` and `/settle` (see [Verification Rules](#verification-rules-must) rule 9), the server is alerted if a close request is already in progress and can settle immediately. Together, time-based settlement and facilitator detection protect the server without requiring onchain event monitoring. Servers managing many concurrent channels MAY additionally monitor onchain `CloseRequested` events (e.g. via RPC polling or an indexer) for more proactive awareness.
+**Server Settlement Timing**: The server SHOULD settle (or close) outstanding vouchers for a channel within `CLOSE_GRACE_PERIOD` of the last client request on that channel. This ensures the server captures earned funds even if the client initiates a unilateral close after the session goes idle. The facilitator provides an additional safety net: since it reads `channel.closeRequestedAt` from onchain state during `/verify` and `/settle` (see [Verification Rules](#verification-rules-must) rule 8), the server is alerted if a close request is already in progress and can settle immediately. Together, time-based settlement and facilitator detection protect the server without requiring onchain event monitoring. Servers managing many concurrent channels MAY additionally monitor onchain `CloseRequested` events (e.g. via RPC polling or an indexer) for more proactive awareness.
+
+**Channel Rotation Requirement**: Servers MUST close all active channels before changing either `payTo` or `authorizedSettler`. Both values are part of the `channelId` computation. Changing them while channels are open would leave clients with channels pointing to stale server keys. After closing all channels, the server updates its 402 response with the new values and clients open fresh channels on the next request.
 
 ---
 

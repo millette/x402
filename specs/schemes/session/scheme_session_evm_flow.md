@@ -10,7 +10,7 @@ API charges **$0.10 per lookup** in USDC. The client opens a channel with a $1.0
 | :------------------- | :--------------------------------------------- |
 | Client (payer)       | `0xClientAddress`                              |
 | Server (payee)       | `0xServerPayeeAddress`                         |
-| Facilitator signer   | `0xFacilitatorSignerAddress`                   |
+| Server settler       | `0xServerSettlerAddress`                       |
 | USDC on Base         | `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913`  |
 | Network              | `eip155:8453` (Base)                           |
 | Price per request    | `100000` ($0.10 USDC, 6 decimals)              |
@@ -59,7 +59,7 @@ Host: api.example.com
       "payTo": "0xServerPayeeAddress",
       "maxTimeoutSeconds": 3600,
       "extra": {
-        "authorizedSettler": "0xFacilitatorSignerAddress",
+        "authorizedSettler": "0xServerSettlerAddress",
         "name": "USDC",
         "version": "2"
       }
@@ -92,7 +92,7 @@ The client decides to deposit $1.00 (`1000000`) to cover ~10 requests. It signs 
     "payTo": "0xServerPayeeAddress",
     "maxTimeoutSeconds": 3600,
     "extra": {
-      "authorizedSettler": "0xFacilitatorSignerAddress",
+      "authorizedSettler": "0xServerSettlerAddress",
       "name": "USDC",
       "version": "2"
     }
@@ -106,7 +106,7 @@ The client decides to deposit $1.00 (`1000000`) to cover ~10 requests. It signs 
       "deposit": "1000000",
       "salt": "0x...keccak256(abi.encode('x402-session', uint256(0)))",
       "authorizedSigner": "0x0000000000000000000000000000000000000000",
-      "authorizedSettler": "0xFacilitatorSignerAddress",
+      "authorizedSettler": "0xServerSettlerAddress",
       "erc3009Authorization": {
         "validAfter": 0,
         "validBefore": 1711929600,
@@ -142,7 +142,7 @@ The server forwards the payload to the facilitator for validation. The facilitat
       "payTo": "0xServerPayeeAddress",
       "maxTimeoutSeconds": 3600,
       "extra": {
-        "authorizedSettler": "0xFacilitatorSignerAddress",
+        "authorizedSettler": "0xServerSettlerAddress",
         "name": "USDC",
         "version": "2"
       }
@@ -156,7 +156,7 @@ The server forwards the payload to the facilitator for validation. The facilitat
         "deposit": "1000000",
         "salt": "0x...keccak256(abi.encode('x402-session', uint256(0)))",
         "authorizedSigner": "0x0000000000000000000000000000000000000000",
-        "authorizedSettler": "0xFacilitatorSignerAddress",
+        "authorizedSettler": "0xServerSettlerAddress",
         "erc3009Authorization": {
           "validAfter": 0,
           "validBefore": 1711929600,
@@ -179,7 +179,7 @@ The server forwards the payload to the facilitator for validation. The facilitat
     "payTo": "0xServerPayeeAddress",
     "maxTimeoutSeconds": 3600,
     "extra": {
-      "authorizedSettler": "0xFacilitatorSignerAddress",
+      "authorizedSettler": "0xServerSettlerAddress",
       "name": "USDC",
       "version": "2"
     }
@@ -214,7 +214,7 @@ After verification succeeds, the server calls `/settle`. The facilitator sees `p
     "payTo": "0xServerPayeeAddress",
     "maxTimeoutSeconds": 3600,
     "extra": {
-      "authorizedSettler": "0xFacilitatorSignerAddress",
+      "authorizedSettler": "0xServerSettlerAddress",
       "name": "USDC",
       "version": "2"
     }
@@ -281,7 +281,7 @@ The server reads the `channelId` from the client's payload, looks up its own per
       "payTo": "0xServerPayeeAddress",
       "maxTimeoutSeconds": 3600,
       "extra": {
-        "authorizedSettler": "0xFacilitatorSignerAddress",
+        "authorizedSettler": "0xServerSettlerAddress",
         "name": "USDC",
         "version": "2"
       }
@@ -309,7 +309,7 @@ The client signs a voucher using its own channel state:
     "payTo": "0xServerPayeeAddress",
     "maxTimeoutSeconds": 3600,
     "extra": {
-      "authorizedSettler": "0xFacilitatorSignerAddress",
+      "authorizedSettler": "0xServerSettlerAddress",
       "name": "USDC",
       "version": "2"
     }
@@ -342,7 +342,7 @@ The server reads `channelId` from the payload, looks up its own state (`lastCumu
       "payTo": "0xServerPayeeAddress",
       "maxTimeoutSeconds": 3600,
       "extra": {
-        "authorizedSettler": "0xFacilitatorSignerAddress",
+        "authorizedSettler": "0xServerSettlerAddress",
         "name": "USDC",
         "version": "2"
       }
@@ -362,7 +362,7 @@ The server reads `channelId` from the payload, looks up its own state (`lastCumu
     "payTo": "0xServerPayeeAddress",
     "maxTimeoutSeconds": 3600,
     "extra": {
-      "authorizedSettler": "0xFacilitatorSignerAddress",
+      "authorizedSettler": "0xServerSettlerAddress",
       "name": "USDC",
       "version": "2",
       "channelId": "0xabc123...channelId",
@@ -430,7 +430,7 @@ On the 11th request, the server returns a generic 402 (price only). The client k
       "payTo": "0xServerPayeeAddress",
       "maxTimeoutSeconds": 3600,
       "extra": {
-        "authorizedSettler": "0xFacilitatorSignerAddress",
+        "authorizedSettler": "0xServerSettlerAddress",
         "name": "USDC",
         "version": "2"
       }
@@ -457,7 +457,7 @@ On the 11th request, the server returns a generic 402 (price only). The client k
     "payTo": "0xServerPayeeAddress",
     "maxTimeoutSeconds": 3600,
     "extra": {
-      "authorizedSettler": "0xFacilitatorSignerAddress",
+      "authorizedSettler": "0xServerSettlerAddress",
       "name": "USDC",
       "version": "2"
     }
@@ -501,7 +501,7 @@ The server reads the `channelId` from the payload, looks up its own state, and i
     "payTo": "0xServerPayeeAddress",
     "maxTimeoutSeconds": 3600,
     "extra": {
-      "authorizedSettler": "0xFacilitatorSignerAddress",
+      "authorizedSettler": "0xServerSettlerAddress",
       "name": "USDC",
       "version": "2",
       "channelId": "0xabc123...channelId",
@@ -540,7 +540,7 @@ After verification succeeds, the server calls `/settle`. The facilitator sees `p
     "payTo": "0xServerPayeeAddress",
     "maxTimeoutSeconds": 3600,
     "extra": {
-      "authorizedSettler": "0xFacilitatorSignerAddress",
+      "authorizedSettler": "0xServerSettlerAddress",
       "name": "USDC",
       "version": "2",
       "channelId": "0xabc123...channelId",
@@ -607,7 +607,7 @@ The client makes one more request and signals it is done by setting `requestClos
       "payTo": "0xServerPayeeAddress",
       "maxTimeoutSeconds": 3600,
       "extra": {
-        "authorizedSettler": "0xFacilitatorSignerAddress",
+        "authorizedSettler": "0xServerSettlerAddress",
         "name": "USDC",
         "version": "2"
       }
@@ -634,7 +634,7 @@ The client makes one more request and signals it is done by setting `requestClos
     "payTo": "0xServerPayeeAddress",
     "maxTimeoutSeconds": 3600,
     "extra": {
-      "authorizedSettler": "0xFacilitatorSignerAddress",
+      "authorizedSettler": "0xServerSettlerAddress",
       "name": "USDC",
       "version": "2"
     }
@@ -668,7 +668,7 @@ The server includes its channel state in `paymentRequirements.extra`:
       "payTo": "0xServerPayeeAddress",
       "maxTimeoutSeconds": 3600,
       "extra": {
-        "authorizedSettler": "0xFacilitatorSignerAddress",
+        "authorizedSettler": "0xServerSettlerAddress",
         "name": "USDC",
         "version": "2"
       }
@@ -689,7 +689,7 @@ The server includes its channel state in `paymentRequirements.extra`:
     "payTo": "0xServerPayeeAddress",
     "maxTimeoutSeconds": 3600,
     "extra": {
-      "authorizedSettler": "0xFacilitatorSignerAddress",
+      "authorizedSettler": "0xServerSettlerAddress",
       "name": "USDC",
       "version": "2",
       "channelId": "0xabc123...channelId",
@@ -712,7 +712,7 @@ The server includes its channel state in `paymentRequirements.extra`:
 
 ### Server → Facilitator: `POST /settle` — close channel onchain
 
-The facilitator sees `requestClose: true` in the voucher payload and calls `close(channelId, 1200000, voucherSignature)` as the `authorizedSettler`. The contract settles the final amount to the server and refunds the remainder to the client.
+The server signs a `CloseAuthorization(channelId, 1200000)` with its `authorizedSettler` delegate and includes it in the settle request. The facilitator sees `requestClose: true` in the voucher payload and calls `close(channelId, 1200000, voucherSignature, closeAuthorization)`. The contract verifies the `CloseAuthorization`, settles the final amount to the server, and refunds the remainder to the client.
 
 **Request:**
 
@@ -728,13 +728,14 @@ The facilitator sees `requestClose: true` in the voucher payload and calls `clos
     "payTo": "0xServerPayeeAddress",
     "maxTimeoutSeconds": 3600,
     "extra": {
-      "authorizedSettler": "0xFacilitatorSignerAddress",
+      "authorizedSettler": "0xServerSettlerAddress",
       "name": "USDC",
       "version": "2",
       "channelId": "0xabc123...channelId",
       "cumulativeAmount": "1100000",
       "deposit": "1500000",
-      "lastSignature": "0x...EIP-712 Voucher signature for cumulativeAmount 1100000"
+      "lastSignature": "0x...EIP-712 Voucher signature for cumulativeAmount 1100000",
+      "closeAuthorization": "0x...EIP-712 CloseAuthorization signature from server settler"
     }
   }
 }
@@ -782,7 +783,7 @@ The client returns days later. The channel from Lifecycle 1 was **not** closed (
 | :------------------- | :--------------------------------------------- |
 | Client (payer)       | `0xClientAddress`                              |
 | Server (payee)       | `0xServerPayeeAddress`                         |
-| Facilitator signer   | `0xFacilitatorSignerAddress`                   |
+| Server settler       | `0xServerSettlerAddress`                       |
 | USDC on Base         | `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913`  |
 | Network              | `eip155:8453` (Base)                           |
 | Price per request    | `100000` ($0.10 USDC, 6 decimals)              |
@@ -833,7 +834,7 @@ Host: api.example.com
       "payTo": "0xServerPayeeAddress",
       "maxTimeoutSeconds": 3600,
       "extra": {
-        "authorizedSettler": "0xFacilitatorSignerAddress",
+        "authorizedSettler": "0xServerSettlerAddress",
         "name": "USDC",
         "version": "2"
       }
@@ -862,7 +863,7 @@ channelId_0 = keccak256(abi.encode(
   0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913,
   salt_0,
   0x0000000000000000000000000000000000000000,
-  0xFacilitatorSignerAddress,
+  0xServerSettlerAddress,
   contractAddress,
   8453
 ))
@@ -908,7 +909,7 @@ The client anchors to the onchain `settled` amount (500000) since it has no othe
     "payTo": "0xServerPayeeAddress",
     "maxTimeoutSeconds": 3600,
     "extra": {
-      "authorizedSettler": "0xFacilitatorSignerAddress",
+      "authorizedSettler": "0xServerSettlerAddress",
       "name": "USDC",
       "version": "2"
     }
@@ -942,7 +943,7 @@ The server reads `channelId` from the payload, looks up its own state (`lastCumu
     "payTo": "0xServerPayeeAddress",
     "maxTimeoutSeconds": 3600,
     "extra": {
-      "authorizedSettler": "0xFacilitatorSignerAddress",
+      "authorizedSettler": "0xServerSettlerAddress",
       "name": "USDC",
       "version": "2",
       "channelId": "0xdef456...",
@@ -986,7 +987,7 @@ The server returns a 402 **with** its per-channel state and `lastSignature` so t
       "payTo": "0xServerPayeeAddress",
       "maxTimeoutSeconds": 3600,
       "extra": {
-        "authorizedSettler": "0xFacilitatorSignerAddress",
+        "authorizedSettler": "0xServerSettlerAddress",
         "name": "USDC",
         "version": "2",
         "channelId": "0xdef456...",
@@ -1021,7 +1022,7 @@ The client verifies `lastSignature` before trusting the server's claimed state:
     "payTo": "0xServerPayeeAddress",
     "maxTimeoutSeconds": 3600,
     "extra": {
-      "authorizedSettler": "0xFacilitatorSignerAddress",
+      "authorizedSettler": "0xServerSettlerAddress",
       "name": "USDC",
       "version": "2",
       "channelId": "0xdef456...",
@@ -1055,7 +1056,7 @@ The client verifies `lastSignature` before trusting the server's claimed state:
     "payTo": "0xServerPayeeAddress",
     "maxTimeoutSeconds": 3600,
     "extra": {
-      "authorizedSettler": "0xFacilitatorSignerAddress",
+      "authorizedSettler": "0xServerSettlerAddress",
       "name": "USDC",
       "version": "2",
       "channelId": "0xdef456...",
@@ -1128,7 +1129,7 @@ The server recovers the client address from the SIWX token, looks up open channe
       "payTo": "0xServerPayeeAddress",
       "maxTimeoutSeconds": 3600,
       "extra": {
-        "authorizedSettler": "0xFacilitatorSignerAddress",
+        "authorizedSettler": "0xServerSettlerAddress",
         "name": "USDC",
         "version": "2",
         "channelId": "0xdef456...",
@@ -1158,7 +1159,7 @@ The server recovers the client address from the SIWX token, looks up open channe
     "payTo": "0xServerPayeeAddress",
     "maxTimeoutSeconds": 3600,
     "extra": {
-      "authorizedSettler": "0xFacilitatorSignerAddress",
+      "authorizedSettler": "0xServerSettlerAddress",
       "name": "USDC",
       "version": "2",
       "channelId": "0xdef456...",
