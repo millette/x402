@@ -45,7 +45,8 @@ Both new functions use `receiveWithAuthorization` (not `transferWithAuthorizatio
      // --- Constants ---
 
      bytes32 public constant VOUCHER_TYPEHASH =
-         keccak256("Voucher(bytes32 channelId,uint128 cumulativeAmount)");
+-        keccak256("Voucher(bytes32 channelId,uint128 cumulativeAmount)");
++        keccak256("Voucher(bytes32 channelId,uint128 cumulativeAmount,uint64 nonce)");
 
 +    bytes32 public constant CLOSE_AUTHORIZATION_TYPEHASH =
 +        keccak256("CloseAuthorization(bytes32 channelId,uint128 settleAmount)");
@@ -120,7 +121,7 @@ Both new functions use `receiveWithAuthorization` (not `transferWithAuthorizatio
 +            authorizedSettler: authorizedSettler,
              deposit: deposit,
              settled: 0,
-+            lastVoucherCumulativeAmount: 0,
++            lastVoucherNonce: 0,
              closeRequestedAt: 0,
              finalized: false
          });
@@ -189,7 +190,7 @@ Both new functions use `receiveWithAuthorization` (not `transferWithAuthorizatio
 +            authorizedSettler: authorizedSettler,
 +            deposit: deposit,
 +            settled: 0,
-+            lastVoucherCumulativeAmount: 0,
++            lastVoucherNonce: 0,
 +            closeRequestedAt: 0,
 +            finalized: false
 +        });
@@ -218,6 +219,7 @@ Both new functions use `receiveWithAuthorization` (not `transferWithAuthorizatio
          bytes32 channelId,
          uint128 cumulativeAmount,
 +        uint128 settleAmount,
++        uint64 nonce,
          bytes calldata signature
      )
          external
@@ -244,11 +246,12 @@ Both new functions use `receiveWithAuthorization` (not `transferWithAuthorizatio
 +        if (settleAmount <= channel.settled) {
              revert AmountNotIncreasing();
          }
-+        if (cumulativeAmount <= channel.lastVoucherCumulativeAmount) {
++        if (nonce <= channel.lastVoucherNonce) {
 +            revert VoucherAlreadyUsed();
 +        }
 
-         bytes32 structHash = keccak256(abi.encode(VOUCHER_TYPEHASH, channelId, cumulativeAmount));
+-        bytes32 structHash = keccak256(abi.encode(VOUCHER_TYPEHASH, channelId, cumulativeAmount));
++        bytes32 structHash = keccak256(abi.encode(VOUCHER_TYPEHASH, channelId, cumulativeAmount, nonce));
          bytes32 digest = _hashTypedData(structHash);
          address signer = ECDSA.recoverCalldata(digest, signature);
 
@@ -263,7 +266,7 @@ Both new functions use `receiveWithAuthorization` (not `transferWithAuthorizatio
 -        channel.settled = cumulativeAmount;
 +        uint128 delta = settleAmount - channel.settled;
 +        channel.settled = settleAmount;
-+        channel.lastVoucherCumulativeAmount = cumulativeAmount;
++        channel.lastVoucherNonce = nonce;
 
 -        bool success = ITIP20(channel.token).transfer(channel.payee, delta);
 +        bool success = IERC20(channel.token).transfer(channel.payee, delta);
@@ -415,6 +418,7 @@ Both new functions use `receiveWithAuthorization` (not `transferWithAuthorizatio
          bytes32 channelId,
          uint128 cumulativeAmount,
 +        uint128 settleAmount,
++        uint64 nonce,
          bytes calldata signature
 +        bytes calldata closeAuthorization
      )
@@ -462,12 +466,13 @@ Both new functions use `receiveWithAuthorization` (not `transferWithAuthorizatio
             if (cumulativeAmount > channel.deposit) {
                 revert AmountExceedsDeposit();
             }
-+           if (cumulativeAmount <= channel.lastVoucherCumulativeAmount) {
++           if (nonce <= channel.lastVoucherNonce) {
 +               revert VoucherAlreadyUsed();
 +           }
 
              bytes32 structHash =
-                 keccak256(abi.encode(VOUCHER_TYPEHASH, channelId, cumulativeAmount));
+-                keccak256(abi.encode(VOUCHER_TYPEHASH, channelId, cumulativeAmount));
++                keccak256(abi.encode(VOUCHER_TYPEHASH, channelId, cumulativeAmount, nonce));
              bytes32 digest = _hashTypedData(structHash);
              address signer = ECDSA.recoverCalldata(digest, signature);
 
@@ -606,14 +611,16 @@ Both new functions use `receiveWithAuthorization` (not `transferWithAuthorizatio
       */
      function getVoucherDigest(
          bytes32 channelId,
-         uint128 cumulativeAmount
+         uint128 cumulativeAmount,
++        uint64 nonce
      )
          external
          view
          override
          returns (bytes32)
      {
-         bytes32 structHash = keccak256(abi.encode(VOUCHER_TYPEHASH, channelId, cumulativeAmount));
+-        bytes32 structHash = keccak256(abi.encode(VOUCHER_TYPEHASH, channelId, cumulativeAmount));
++        bytes32 structHash = keccak256(abi.encode(VOUCHER_TYPEHASH, channelId, cumulativeAmount, nonce));
          return _hashTypedData(structHash);
      }
 
@@ -678,7 +685,7 @@ A channel opened via `openWithERC3009` has `channel.payer` set to the actual cli
 - `InvalidPayer()`: Introduced by `openWithERC3009` (for `payer == address(0)` check). The original `open()` does not need this because `msg.sender` can never be `address(0)`.
 - `InvalidCloseAuthorization()`: Introduced by `close`. Reverts when the `CloseAuthorization` signature does not recover to the expected signer (payee or `authorizedSettler`).
 - `SettleAmountExceedsCumulativeAmount()`: Introduced by `settle` and `close`. Reverts when `settleAmount > cumulativeAmount` — the server cannot settle more than the client authorized.
-- `VoucherAlreadyUsed()`: Introduced by `settle` and `close`. Reverts when `cumulativeAmount <= channel.lastVoucherCumulativeAmount` — prevents a previously settled voucher from being replayed to extract the gap between `settleAmount` and `cumulativeAmount` under dynamic pricing.
+- `VoucherAlreadyUsed()`: Introduced by `settle` and `close`. Reverts when `nonce <= channel.lastVoucherNonce` — prevents replay of a previously settled voucher.
 
 ### ERC-3009 Failure Mode
 

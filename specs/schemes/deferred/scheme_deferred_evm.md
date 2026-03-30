@@ -22,7 +22,7 @@ The `deferred` scheme on EVM MUST enforce the following invariants:
 1. **Cumulative Monotonic Vouchers**: Each voucher carries a `cumulativeAmount` strictly greater than the previous, with the delta equal to the per-request price. Only the highest voucher matters for settlement. This eliminates double-spend risk without per-voucher nonce tracking.
 2. **Capital-Backed Escrow**: Clients deposit funds into an onchain channel before consuming resources. The deposit is refundable (unsettled remainder returns on close) and can be topped up. This guarantees the server can always settle up to the deposit amount without further client cooperation.
 3. **Server-Authorized Close**: Channel closure MUST require a signature from the payee or `authorizedSettler`. This prevents unauthorized parties from closing a channel and refunding the deposit before the server has settled earned funds. Settlement has no caller restriction as funds can only flow to the payee.
-4. **Voucher Replay Protection**: Each settlement records the voucher's `cumulativeAmount` in `lastVoucherCumulativeAmount`. Subsequent settlements require a strictly higher `cumulativeAmount`. This prevents a server from settling a voucher for a partial amount and later replaying it to extract the remaining authorization gap (critical for dynamic pricing where `settleAmount <= cumulativeAmount`).
+4. **Voucher Replay Protection**: Each voucher carries a monotonically increasing `nonce`. Subsequent settlements require a strictly higher `nonce`, preventing replay of previously settled vouchers regardless of their `cumulativeAmount`.
 
 ---
 
@@ -68,7 +68,7 @@ version: "1"
 **Type:**
 
 ```
-Voucher(bytes32 channelId, uint128 cumulativeAmount)
+Voucher(bytes32 channelId, uint128 cumulativeAmount, uint64 nonce)
 ```
 
 ### CloseAuthorization EIP-712 Type
@@ -140,6 +140,7 @@ When the server can identify the client (e.g. via [sign-in-with-x](../../extensi
     "channelId": "0xabc123...",
     "chargedCumulativeAmount": "3200",
     "signedCumulativeAmount": "4000",
+    "nonce": 4,
     "signature": "0x...voucher signature for signedCumulativeAmount",
     "deposit": "1000000"
   }
@@ -158,6 +159,7 @@ When the server can identify the client (e.g. via [sign-in-with-x](../../extensi
 | `extra.channelId`               | `string` | enriched | Channel identifier                                                                                                                                                      |
 | `extra.chargedCumulativeAmount` | `string` | enriched | Actual accumulated cost (sum of per-request actual charges)                                                                                                             |
 | `extra.signedCumulativeAmount`  | `string` | enriched | `cumulativeAmount` from the latest client-signed voucher (>= `chargedCumulativeAmount`)                                                                                 |
+| `extra.nonce`                   | `uint64` | enriched | Nonce from the latest accepted voucher                                                                                                                                  |
 | `extra.signature`               | `string` | enriched | Client's voucher signature for `signedCumulativeAmount`                                                                                                                 |
 | `extra.deposit`                 | `string` | enriched | Server's known deposit                                                                                                                                                  |
 
@@ -255,6 +257,7 @@ If a close request was pending, the top-up cancels it and the session continues 
     "voucher": {
       "channelId": "0xabc123...computed channelId",
       "cumulativeAmount": "1000",
+      "nonce": 1,
       "signature": "0x...EIP-712 voucher signature"
     }
   }
@@ -283,6 +286,7 @@ If a close request was pending, the top-up cancels it and the session continues 
     "type": "voucher",
     "channelId": "0xabc123...channelId",
     "cumulativeAmount": "5000",
+    "nonce": 5,
     "signature": "0x...65-byte EIP-712 signature",
     "requestClose": false
   }
@@ -322,6 +326,7 @@ If a close request was pending, the top-up cancels it and the session continues 
     "voucher": {
       "channelId": "0xabc123...channelId",
       "cumulativeAmount": "101000",
+      "nonce": 10,
       "signature": "0x...EIP-712 voucher signature"
     }
   }
@@ -345,6 +350,7 @@ The server MUST maintain the following per open channel:
 | `payer`                   | `address` | Client address                                                                          |
 | `chargedCumulativeAmount` | `uint128` | Actual accumulated cost (sum of per-request actual charges)                             |
 | `signedCumulativeAmount`  | `uint128` | `cumulativeAmount` from the latest client-signed voucher (>= `chargedCumulativeAmount`) |
+| `lastNonce`               | `uint64`  | Nonce from the latest accepted voucher                                                  |
 | `signature`               | `bytes`   | Client's voucher signature for `signedCumulativeAmount`                                 |
 | `deposit`                 | `uint128` | Current channel deposit (mirrored from facilitator `/verify` response)                  |
 | `settled`                 | `uint128` | Amount already settled onchain (mirrored from facilitator response)                     |
@@ -362,6 +368,7 @@ The server MUST NOT update voucher state until the resource handler has succeede
   - Determine `actualPrice` (the actual charge for this request, `<= PaymentRequirements.amount`)
   - `chargedCumulativeAmount += actualPrice`
   - `signedCumulativeAmount = payload.cumulativeAmount`
+  - `lastNonce = payload.nonce`
   - `signature = payload.signature`
   - Mirror `deposit`, `settled`, `closeRequestedAt` from the facilitator response
   - Update `lastRequestTimestamp`
@@ -411,8 +418,8 @@ Performs onchain operations. The facilitator infers the action from the payload:
 | -------------- | ------------- | ------------------------------------------------------------------------- | ------------------------------------------------ |
 | `"open"`       | `channelOpen` | `openWithERC3009()`                                                       | First request — server opens the channel         |
 | `"topUp"`      | `topUp`       | `topUpWithERC3009()`                                                      | Client sent a top-up payload                     |
-| `"settle"`     | `voucher`     | `settle(channelId, cumulativeAmount, settleAmount, sig)`                  | Server batches settlement at its discretion      |
-| `"close"`      | `voucher`     | `close(channelId, cumulativeAmount, settleAmount, voucherSig, closeAuth)` | Client requested close or server-initiated close |
+| `"settle"`     | `voucher`     | `settle(channelId, cumulativeAmount, settleAmount, nonce, sig)`                  | Server batches settlement at its discretion      |
+| `"close"`      | `voucher`     | `close(channelId, cumulativeAmount, settleAmount, nonce, voucherSig, closeAuth)` | Client requested close or server-initiated close |
 
 
 **Request (voucher settle example):**
@@ -439,6 +446,7 @@ Performs onchain operations. The facilitator infers the action from the payload:
       "type": "voucher",
       "channelId": "0xabc123...",
       "cumulativeAmount": "5000",
+      "nonce": 5,
       "settleAmount": "3500",
       "signature": "0x...EIP-712 voucher signature",
       "requestClose": false
@@ -464,8 +472,8 @@ Performs onchain operations. The facilitator infers the action from the payload:
 
 - `**channelOpen`**: Submit `openWithERC3009()` using `payload.channelOpen` parameters. Returns the `channelId` and transaction hash.
 - `**topUp`**: Submit `topUpWithERC3009()` using `payload.topUp` parameters. Returns the transaction hash.
-- `**voucher`**: Submit `settle(channelId, cumulativeAmount, settleAmount, signature)` using the highest voucher. The contract transfers the delta between the onchain `settled` amount and `settleAmount` to the payee, and records `cumulativeAmount` as `lastVoucherCumulativeAmount` to prevent replay.
-- `**voucher` + `requestClose: true`**: Submit `close(channelId, cumulativeAmount, settleAmount, voucherSignature, closeAuthorization)` using the highest voucher and the `CloseAuthorization` signature provided by the server. The `CloseAuthorization` is signed over `settleAmount`. The contract settles the actual amount and refunds the remainder to the payer.
+- `**voucher`**: Submit `settle(channelId, cumulativeAmount, settleAmount, nonce, signature)` using the highest-nonce voucher. The contract transfers the delta between the onchain `settled` amount and `settleAmount` to the payee, and records `nonce` as `lastVoucherNonce` to prevent replay.
+- `**voucher` + `requestClose: true`**: Submit `close(channelId, cumulativeAmount, settleAmount, nonce, voucherSignature, closeAuthorization)` using the highest-nonce voucher and the `CloseAuthorization` signature provided by the server. The `CloseAuthorization` is signed over `settleAmount`. The contract settles the actual amount and refunds the remainder to the payer.
 
 **Response:**
 
@@ -479,6 +487,7 @@ Performs onchain operations. The facilitator infers the action from the payload:
   "extra": {
     "channelId": "0xabc123...",
     "chargedCumulativeAmount": "3200",
+    "nonce": 5,
     "deposit": "100000",
     "settled": "0",
     "closeRequestedAt": 0
@@ -486,7 +495,7 @@ Performs onchain operations. The facilitator infers the action from the payload:
 }
 ```
 
-The `amount` field contains the actual charge for the request (`<= PaymentRequirements.amount`). The `extra` field contains updated channel state. `extra.chargedCumulativeAmount` is the actual accumulated cost across all requests. The server mirrors `deposit`, `settled`, and `closeRequestedAt` into its per-channel state and uses them along with `amount` and `chargedCumulativeAmount` to populate the `PAYMENT-RESPONSE` header. For `channelOpen` payloads, `extra.channelId` contains the newly created channel ID.
+The `amount` field contains the actual charge for the request (`<= PaymentRequirements.amount`). The `extra` field contains updated channel state. `extra.chargedCumulativeAmount` is the actual accumulated cost across all requests. `extra.nonce` is the nonce from the latest accepted voucher. The server mirrors `deposit`, `settled`, `closeRequestedAt`, and `nonce` into its per-channel state and uses them along with `amount` and `chargedCumulativeAmount` to populate the `PAYMENT-RESPONSE` header. For `channelOpen` payloads, `extra.channelId` contains the newly created channel ID.
 
 ### GET /supported
 
@@ -507,7 +516,7 @@ The `amount` field contains the actual charge for the request (`<= PaymentRequir
 
 A facilitator verifying a `deferred`-scheme payment on EVM MUST enforce:
 
-1. **Signature validity**: Compute the EIP-712 digest for `Voucher(channelId, cumulativeAmount)` using the `TempoStreamChannel` domain separator. Recover the signer via `ecrecover`. The recovered signer MUST match `channel.payer` or `channel.authorizedSigner` (if non-zero). For `channelOpen` payloads, verify against the `channelOpen` parameters.
+1. **Signature validity**: Compute the EIP-712 digest for `Voucher(channelId, cumulativeAmount, nonce)` using the `TempoStreamChannel` domain separator. Recover the signer via `ecrecover`. The recovered signer MUST match `channel.payer` or `channel.authorizedSigner` (if non-zero). For `channelOpen` payloads, verify against the `channelOpen` parameters.
 2. **Channel existence**: For `voucher` and `topUp` payloads, read `TempoStreamChannel.getChannel(channelId)` -- the channel MUST exist (`payer != address(0)`) and not be finalized. For `channelOpen`, the channel MUST NOT already exist.
 3. **Payee match**: `channel.payee` MUST equal `paymentRequirements.payTo`.
 4. **Token match**: `channel.token` MUST equal `paymentRequirements.asset`. The contract MUST be on the correct chain.
@@ -515,7 +524,7 @@ A facilitator verifying a `deferred`-scheme payment on EVM MUST enforce:
 6. **Deposit sufficiency**: `payload.cumulativeAmount` MUST be ≤ `channel.deposit` (onchain). For `topUp` payloads, `payload.cumulativeAmount` MUST be ≤ `channel.deposit + topUp.additionalDeposit`.
 7. **Not below settled**: `payload.cumulativeAmount` MUST be > `channel.settled` (onchain). Prevents replay of already-settled vouchers.
 8. **Settle amount bounds** (settlement only): `settleAmount` MUST be `<= cumulativeAmount` and `settleAmount` MUST be `> channel.settled` (onchain).
-9. **Voucher replay protection** (settlement only): `cumulativeAmount` MUST be `> channel.lastVoucherCumulativeAmount` (onchain). This prevents a server from settling a voucher for a partial `settleAmount` and later replaying the same voucher to extract the remaining gap up to `cumulativeAmount`.
+9. **Voucher replay protection** (settlement only): `nonce` MUST be `> channel.lastVoucherNonce` (onchain). This prevents replay of a previously settled voucher, decoupled from `cumulativeAmount` ordering.
 
 The facilitator MUST return the onchain channel snapshot (`deposit`, `settled`, `closeRequestedAt`) in the `/verify` and `/settle` response `extra` field. If `closeRequestedAt != 0`, the server should settle immediately to protect its funds before the grace period expires.
 
@@ -524,8 +533,9 @@ The facilitator MUST return the onchain channel snapshot (`deposit`, `settled`, 
 The server MUST check the cumulative amount increment locally:
 
 - `payload.cumulativeAmount` MUST equal `chargedCumulativeAmount + paymentRequirements.amount`
+- `payload.nonce` MUST equal `lastNonce + 1`
 
-Note that the client bases its next voucher on the server-reported actual cumulative (from `PAYMENT-RESPONSE.extra.chargedCumulativeAmount`).
+Note that the client bases its next voucher on the server-reported actual cumulative (from `PAYMENT-RESPONSE.extra.chargedCumulativeAmount`) and nonce (from `PAYMENT-RESPONSE.extra.nonce`).
 
 If it fails, the server rejects with `deferred_stale_cumulative_amount` and returns a corrective 402.
 
@@ -575,7 +585,7 @@ Where `sequenceIndex` starts at 0 and increments for concurrent channels between
 
 ### Resume After Discovery
 
-After discovering an open channel, the client anchors its voucher to the onchain `settled` amount (`cumulativeAmount = settled + amount`). If the server has unsettled vouchers above settled, the server rejects with `session_stale_cumulative_amount` and returns a corrective 402 with its per-channel state including `chargedCumulativeAmount`, `signedCumulativeAmount`, and `signature`. The client verifies the signature and retries. At most one extra roundtrip.
+After discovering an open channel, the client anchors its voucher to the onchain `settled` amount (`cumulativeAmount = settled + amount`) and reads `lastVoucherNonce` from `getChannel()` (`nonce = lastVoucherNonce + 1`). If the server has unsettled vouchers above settled, the server rejects with `session_stale_cumulative_amount` and returns a corrective 402 with its per-channel state including `chargedCumulativeAmount`, `signedCumulativeAmount`, `nonce`, and `signature`. The client verifies the signature and retries with the corrected cumulative amount and nonce. At most one extra roundtrip.
 
 If the server supports the [sign-in-with-x](../../extensions/sign-in-with-x.md) extension and the client provides a `SIGN-IN-WITH-X` header, the server includes channel state in the 402 directly, skipping the contract read and potential stale-settled roundtrip. The client MUST verify `signature` before using server-provided state (see [Client Verification Rules](#client-verification-rules-must)).
 
@@ -594,18 +604,18 @@ Before using `PAYMENT-RESPONSE` values as the base for the next voucher, the cli
 3. **Deposit consistency**: For non-topup responses, `PAYMENT-RESPONSE.extra.deposit` MUST equal the client's last known deposit. For topup responses, it MUST equal `previousDeposit + additionalDeposit`.
 4. **Channel ID consistency**: `PAYMENT-RESPONSE.extra.channelId` MUST match the channel the client is operating on.
 
-The client computes the next voucher as: `nextCumulativeAmount = PAYMENT-RESPONSE.extra.chargedCumulativeAmount + PaymentRequirements.amount`.
+The client computes the next voucher as: `nextCumulativeAmount = PAYMENT-RESPONSE.extra.chargedCumulativeAmount + PaymentRequirements.amount` and `nextNonce = PAYMENT-RESPONSE.extra.nonce + 1`.
 
 If any check fails, the client MUST NOT sign further vouchers and SHOULD initiate channel closure.
 
 ### Recovery Verification
 
-When the client has lost state and receives a corrective 402 (or SIWX-enriched 402) containing channel state, the server MUST include `signature` (the client's own voucher signature for `signedCumulativeAmount`) and `chargedCumulativeAmount` (the actual accumulated cost).
+When the client has lost state and receives a corrective 402 (or SIWX-enriched 402) containing channel state, the server MUST include `signature` (the client's own voucher signature for `signedCumulativeAmount`), `chargedCumulativeAmount` (the actual accumulated cost), and `nonce` (the nonce from the latest accepted voucher).
 
-1. **Voucher signature**: Compute the EIP-712 `Voucher(channelId, signedCumulativeAmount)` digest, recover the signer from `signature`, confirm it matches the client's own address (or `authorizedSigner`).
+1. **Voucher signature**: Compute the EIP-712 `Voucher(channelId, signedCumulativeAmount, nonce)` digest, recover the signer from `signature`, confirm it matches the client's own address (or `authorizedSigner`).
 2. **Charged within signed**: `chargedCumulativeAmount` MUST be `<= signedCumulativeAmount`. The server cannot claim more than the client authorized.
-3. **Onchain consistency**: `chargedCumulativeAmount` MUST be ≥ the onchain `settled` amount. `extra.deposit` MUST match the onchain deposit.
-4. **Resume**: The client resumes with `chargedCumulativeAmount` as the base for the next voucher (`nextCumulativeAmount = chargedCumulativeAmount + PaymentRequirements.amount`).
+3. **Onchain consistency**: `chargedCumulativeAmount` MUST be ≥ the onchain `settled` amount. `extra.deposit` MUST match the onchain deposit. `extra.nonce` MUST be ≥ the onchain `lastVoucherNonce`.
+4. **Resume**: The client resumes with `chargedCumulativeAmount` as the base for the next voucher (`nextCumulativeAmount = chargedCumulativeAmount + PaymentRequirements.amount`) and `nextNonce = nonce + 1`.
 
 If the signature does not verify, the client MUST NOT sign based on the server's claimed state and SHOULD fall back to unilateral channel closure.
 
@@ -615,7 +625,7 @@ If the signature does not verify, the client MUST NOT sign based on the server's
 
 **Reusing Existing Channels**: If a client has an open, non-finalized channel to the same `(payee, token)` with sufficient remaining balance (`deposit - settled ≥ amount`), it SHOULD reuse it rather than opening a new one. Servers MUST support receiving vouchers for any open channel where they are the payee.
 
-**Cooperative Close**: The client includes `requestClose: true` in a voucher payload. The server processes the request normally, determines the `settleAmount`, then signs a `CloseAuthorization(channelId, settleAmount)` with its payee key or `authorizedSettler` delegate and includes it in the `/settle` request to the facilitator. The facilitator sees `requestClose: true` in the payload and calls `TempoStreamChannel.close(channelId, cumulativeAmount, settleAmount, voucherSignature, closeAuthorization)`. The contract verifies the `CloseAuthorization` signature over `settleAmount`, settles the actual earned amount to the payee, and refunds the remainder to the payer. If no identification extensions are in use and the client does not persist state, it SHOULD close the channel at the end of its session to avoid resume complexity.
+**Cooperative Close**: The client includes `requestClose: true` in a voucher payload. The server processes the request normally, determines the `settleAmount`, then signs a `CloseAuthorization(channelId, settleAmount)` with its payee key or `authorizedSettler` delegate and includes it in the `/settle` request to the facilitator. The facilitator sees `requestClose: true` in the payload and calls `TempoStreamChannel.close(channelId, cumulativeAmount, settleAmount, nonce, voucherSignature, closeAuthorization)`. The contract verifies the `CloseAuthorization` signature over `settleAmount`, settles the actual earned amount to the payee, and refunds the remainder to the payer. If no identification extensions are in use and the client does not persist state, it SHOULD close the channel at the end of its session to avoid resume complexity.
 
 **Unilateral Close (Escape Hatch)**: If the server becomes unresponsive and the client cannot initiate a cooperative close, the client calls `TempoStreamChannel.requestClose(channelId)` directly onchain, paying gas themselves. This starts the `CLOSE_GRACE_PERIOD`. The server can still settle outstanding vouchers via the facilitator during this period. After the grace period, the client calls `withdraw()` to reclaim all unsettled funds. 
 
@@ -637,7 +647,7 @@ The EVM network binding additionally defines these binding-specific codes:
 | `deferred_evm_invalid_increment`  | Delta does not equal the required `amount` per request                                                                                                                  |
 | `deferred_evm_payee_mismatch`     | Channel payee does not match `payTo` in requirements                                                                                                                    |
 | `deferred_evm_token_mismatch`     | Channel token does not match `asset` in requirements                                                                                                                    |
-| `session_stale_cumulative_amount` | After channel discovery, client voucher base used onchain `settled` but server holds higher `lastCumulativeAmount` ([Resume After Discovery](#resume-after-discovery)). |
+| `session_stale_cumulative_amount` | After channel discovery, client voucher base used onchain `settled`/`lastVoucherNonce` but server holds higher state ([Resume After Discovery](#resume-after-discovery)). |
 
 
 ---
